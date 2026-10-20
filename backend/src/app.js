@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 
 const app = express();
+const cropListingRoutes = require("./routes/cropListingRoutes");
 
 // Allow requests from our Vite frontend.
 app.use(
@@ -23,6 +24,8 @@ app.get("/api/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+app.use("/api/crop-listings", cropListingRoutes);
 
 // Handle unknown API routes.
 app.use((req, res) => {
