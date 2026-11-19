@@ -1,40 +1,187 @@
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* ==============================
+   AGRIBRIDGE DESIGN SYSTEM
+================================ */
+
+:root {
+  font-family: 'Inter', sans-serif;
+
+  /* Brand Colors */
+  --primary: #194d38;
+  --primary-dark: #123b2b;
+  --primary-light: #347c55;
+  --secondary: #eaf2e8;
+
+  /* Background Colors */
+  --background: #f7f8f3;
+  --surface: #ffffff;
+  --surface-soft: #f0f5ed;
+
+  /* Text Colors */
+  --text-primary: #1d3428;
+  --text-secondary: #68796d;
+  --text-muted: #89958b;
+
+  /* Accent */
+  --accent: #d5a64b;
+
+  /* Borders */
+  --border: #e2e9df;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+
+  /* Shadows */
+  --shadow-sm: 0 2px 8px rgba(25, 77, 56, 0.05);
+  --shadow-md: 0 8px 24px rgba(25, 77, 56, 0.07);
+  --shadow-lg: 0 16px 40px rgba(25, 77, 56, 0.10);
+
+  /* Typography */
+  --font-xs: 13px;
+  --font-sm: 14px;
+  --font-base: 16px;
+  --font-lg: 18px;
+  --font-xl: 22px;
+  --font-2xl: 26px;
+  --font-3xl: 34px;
+}
+
+/* ==============================
+   GLOBAL RESET
+================================ */
+
 * {
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
 }
 
+html {
+  scroll-behavior: smooth;
+  font-size: 16px;
+}
+
 body {
-  margin: 0;
-  font-family: Arial, sans-serif;
-  background: #f4f7f1;
-  color: #243426;
+  min-width: 320px;
+  min-height: 100vh;
+  font-family: 'Inter', sans-serif;
+  font-size: var(--font-base);
+  line-height: 1.6;
+  background: var(--background);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.app {
-  max-width: 800px;
-  margin: 80px auto;
-  padding: 24px;
-  text-align: center;
+/* ==============================
+   HEADINGS
+================================ */
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-primary);
+  font-weight: 700;
+  line-height: 1.25;
 }
 
-.app h1 {
-  color: #287443;
-  font-size: 2.5rem;
+h1 {
+  font-size: clamp(32px, 4vw, 42px);
 }
 
-.status-card {
-  margin-top: 32px;
-  padding: 24px;
-  background: white;
-  border: 1px solid #dce7d9;
-  border-radius: 16px;
-  box-shadow: 0 4px 16px #2434260d;
+h2 {
+  font-size: clamp(24px, 3vw, 30px);
 }
 
-.connected {
-  color: #218344;
+h3 {
+  font-size: 20px;
 }
 
-.disconnected {
-  color: #c0392b;
+p {
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+/* ==============================
+   BUTTONS AND FORMS
+================================ */
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  color: var(--text-primary);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #9aa59b;
+}
+
+/* ==============================
+   LINKS AND IMAGES
+================================ */
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+/* ==============================
+   SELECTION AND SCROLLBAR
+================================ */
+
+::selection {
+  background: #dcecdf;
+  color: var(--primary);
+}
+
+*:focus-visible {
+  outline: 3px solid rgba(52, 124, 85, 0.35);
+  outline-offset: 3px;
+}
+
+/* ==============================
+   RESPONSIVE TYPOGRAPHY
+================================ */
+
+@media (max-width: 768px) {
+  :root {
+    --font-base: 15px;
+    --font-lg: 17px;
+    --font-xl: 20px;
+    --font-2xl: 24px;
+  }
+
+  body {
+    font-size: 15px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
