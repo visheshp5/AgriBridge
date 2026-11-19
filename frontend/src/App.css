@@ -1103,3 +1103,10 @@ h1, h2, h3, p { margin-top: 0; }
 }
 
 /* End of AgriBridge stylesheet */
+.role-cta h2 {
+  color: #ffffff !important;
+}
+
+.role-cta p {
+  color: #d5e2d9;
+}
