@@ -62,12 +62,12 @@ const buyerDemandSchema = new mongoose.Schema(
       type: Date,
     },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
+// Indexes for efficient searching
 buyerDemandSchema.index({ cropName: 1, status: 1 });
 buyerDemandSchema.index({ buyer: 1, createdAt: -1 });
+buyerDemandSchema.index({ "location.state": 1, "location.district": 1 });
 
 module.exports = mongoose.model("BuyerDemand", buyerDemandSchema);
