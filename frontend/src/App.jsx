@@ -1,5 +1,62 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
+
+const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace(/\/$/, "");
+
+async function apiRequest(path, options = {}) {
+  const token = localStorage.getItem("agribridge_token");
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_URL}${path}`, {
+    ...options,
+    headers,
+  });
+
+  const body = await response.json().catch(() => ({
+    success: false,
+    message: "The server returned an invalid response",
+  }));
+
+  if (!response.ok) {
+    throw new Error(body.message || "Request failed");
+  }
+
+  return body;
+}
+
+function formatUserLocation(location) {
+  if (!location) return "";
+  return [location.village, location.district, location.state].filter(Boolean).join(", ");
+}
+
+function parseLocation(locationText) {
+  const parts = String(locationText || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const district = parts.length > 2 ? parts[parts.length - 2] : parts[0];
+  const state = parts.length > 1 ? parts[parts.length - 1] : "Unknown";
+
+  return {
+    ...(parts.length > 2 && { village: parts.slice(0, -2).join(", ") }),
+    district: district || "Unknown",
+    state: state === "UP" ? "Uttar Pradesh" : state,
+  };
+}
+
+function getListingCondition(quality) {
+  if (quality === "FAQ Grade") return "standard";
+  if (quality === "Grade A") return "good";
+  return "premium";
+}
 
 const INITIAL_CROPS = ["Wheat", "Rice", "Potato", "Mustard", "Maize"];
 
@@ -7,12 +64,6 @@ const DEMO_MARKETS = [
   { id: "agra", name: "Agra Mandi", type: "Mandi", distance: 42, price: 2650, transport: 1400, handling: 250, commission: 150, freshness: "Updated today, 9:15 AM", buyers: 8, note: "Strong demand for quality wheat" },
   { id: "hathras", name: "Hathras Mandi", type: "Mandi", distance: 35, price: 2580, transport: 1100, handling: 220, commission: 130, freshness: "Updated today, 8:40 AM", buyers: 5, note: "Lower transport cost" },
   { id: "mathura", name: "Mathura Mandi", type: "Mandi", distance: 8, price: 2500, transport: 400, handling: 180, commission: 125, freshness: "Updated today, 9:00 AM", buyers: 11, note: "Closest option with active buyers" },
-];
-
-const BUYERS = [
-  { id: "b1", name: "Shree Krishna Foods", location: "Mathura, UP", crops: "Wheat, Rice", rating: "4.8", verified: true, price: 2675, distance: 12, quantity: "10–50 quintals", payment: "Within 2 days" },
-  { id: "b2", name: "Brij Agro Traders", location: "Agra, UP", crops: "Wheat, Mustard", rating: "4.6", verified: true, price: 2700, distance: 39, quantity: "20–100 quintals", payment: "On delivery" },
-  { id: "b3", name: "Kisan Direct Procurement", location: "Hathras, UP", crops: "Wheat, Potato, Maize", rating: "4.7", verified: true, price: 2600, distance: 31, quantity: "5–75 quintals", payment: "Within 24 hours" },
 ];
 
 const NEWS = [
@@ -24,6 +75,7 @@ const NEWS = [
 const NAV_ITEMS = [
   { id: "dashboard", label: "Home", icon: "⌂" },
   { id: "sell", label: "Want to sell", icon: "↗" },
+  { id: "active-demand", label: "Active demand", icon: "⌕" },
   { id: "history", label: "Selling history", icon: "▤" },
   { id: "news", label: "Mandi news", icon: "◉" },
   { id: "earnings", label: "Total earnings", icon: "₹" },
@@ -61,6 +113,29 @@ function App() {
   const [showRegistrationPassword, setShowRegistrationPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [login, setLogin] = useState({ phone: "", password: "" });
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [page, setPage] = useState("landing");
+  const [location, setLocation] = useState("Mathura, Uttar Pradesh");
+  const [locationEditing, setLocationEditing] = useState(false);
+  const [locationDraft, setLocationDraft] = useState(location);
+  const [searchLocation, setSearchLocation] = useState("Mathura, Uttar Pradesh");
+  const [openCropListings, setOpenCropListings] = useState([]);
+  const [openBuyerDemands, setOpenBuyerDemands] = useState([]);
+  const [myCropListings, setMyCropListings] = useState([]);
+  const [editingListingId, setEditingListingId] = useState("");
+  const [listingDraft, setListingDraft] = useState(null);
+  const [myBuyerDemands, setMyBuyerDemands] = useState([]);
+  const [marketplaceLoading, setMarketplaceLoading] = useState(false);
+  const [marketplaceError, setMarketplaceError] = useState("");
+  const [buyerDemandDraft, setBuyerDemandDraft] = useState({
+    cropName: "Wheat",
+    quantity: "20",
+    offeredPricePerQuintal: "2600",
+    state: "Uttar Pradesh",
+    district: "Mathura",
+  });
   const [registration, setRegistration] = useState({
     name: "", phone: "", email: "", password: "", confirmPassword: "", role: "farmer",
     state: "", district: "", village: "",
@@ -70,45 +145,153 @@ function App() {
     setRegistration((current) => ({ ...current, [field]: value }));
   }
 
-  function submitRegistration(event) {
+  useEffect(() => {
+    const token = localStorage.getItem("agribridge_token");
+    if (!token) return;
+
+    apiRequest("/api/auth/me")
+      .then((body) => {
+        const user = body.data;
+        const fullLocation = formatUserLocation(user.location);
+        setRole(user.role);
+        setUserName(user.name);
+        setLocation(fullLocation || "Mathura, Uttar Pradesh");
+        setSearchLocation(fullLocation || "Mathura, Uttar Pradesh");
+        setPage("dashboard");
+      })
+      .catch(() => {
+        localStorage.removeItem("agribridge_token");
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!role) return;
+
+    if (page === "buy" || page === "dashboard") {
+      apiRequest("/api/crop-listings?limit=50&sort=newest")
+        .then((body) => {
+          setMarketplaceError("");
+          setOpenCropListings(body.data || []);
+        })
+        .catch((error) => setMarketplaceError(error.message));
+    }
+
+    if (page === "sell" || page === "deals") {
+      apiRequest("/api/crop-listings/my-listings")
+        .then((body) => {
+          setMarketplaceError("");
+          setMyCropListings(body.data || []);
+        })
+        .catch((error) => setMarketplaceError(error.message));
+    }
+
+    if (page === "offers") {
+      apiRequest("/api/buyer-demands/my-demands")
+        .then((body) => {
+          setMarketplaceError("");
+          setMyBuyerDemands(body.data || []);
+        })
+        .catch((error) => setMarketplaceError(error.message));
+    }
+
+    if (page === "active-demand" || (page === "dashboard" && role === "farmer")) {
+      apiRequest("/api/buyer-demands?limit=50&sort=newest")
+        .then((body) => {
+          setMarketplaceError("");
+          setOpenBuyerDemands(body.data || []);
+        })
+        .catch((error) => setMarketplaceError(error.message));
+    }
+  }, [page, role]);
+
+  async function applyAuthenticatedUser(user, token) {
+    localStorage.setItem("agribridge_token", token);
+    setRole(user.role);
+    setUserName(user.name);
+
+    try {
+      const profileBody = await apiRequest("/api/auth/me");
+      const profile = profileBody.data;
+      const fullLocation = formatUserLocation(profile.location);
+      setRole(profile.role);
+      setUserName(profile.name);
+      setLocation(fullLocation || "Mathura, Uttar Pradesh");
+      setSearchLocation(fullLocation || "Mathura, Uttar Pradesh");
+    } catch {
+      setLocation("Mathura, Uttar Pradesh");
+      setSearchLocation("Mathura, Uttar Pradesh");
+    }
+
+    setPage("dashboard");
+  }
+
+  async function submitRegistration(event) {
     event.preventDefault();
-    if (registration.password !== registration.confirmPassword) {
-      window.alert("Passwords do not match. Please confirm your password.");
+    setAuthError("");
+
+    if (registration.password.length < 8 || registration.password.length > 72) {
+      setAuthError("Password must be between 8 and 72 characters.");
       return;
     }
-    setUserName(registration.name.trim());
-    const fullLocation = [registration.village, registration.district, registration.state]
-      .filter(Boolean).join(", ");
-    if (fullLocation) {
-      setLocation(fullLocation);
-      setSearchLocation(fullLocation);
+
+    if (registration.password !== registration.confirmPassword) {
+      setAuthError("Passwords do not match. Please confirm your password.");
+      return;
     }
-    signIn(registration.role, "register");
+
+    setAuthLoading(true);
+
+    try {
+      await apiRequest("/api/auth/register", {
+        method: "POST",
+        body: JSON.stringify({
+          name: registration.name.trim(),
+          phone: registration.phone,
+          email: registration.email.trim() || undefined,
+          password: registration.password,
+          role: registration.role,
+          location: {
+            state: registration.state.trim(),
+            district: registration.district.trim(),
+            village: registration.village.trim(),
+          },
+        }),
+      });
+
+      const loginBody = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          phone: registration.phone,
+          password: registration.password,
+        }),
+      });
+
+      await applyAuthenticatedUser(loginBody.data.user, loginBody.data.token);
+      notify("Registration successful. Welcome to AgriBridge!");
+    } catch (error) {
+      setAuthError(error.message);
+    } finally {
+      setAuthLoading(false);
+    }
   }
-  const [page, setPage] = useState("landing");
   const [language, setLanguage] = useState("English");
-  const [location, setLocation] = useState("Mathura, Uttar Pradesh");
-  const [locationEditing, setLocationEditing] = useState(false);
-  const [locationDraft, setLocationDraft] = useState(location);
   const [voiceListening, setVoiceListening] = useState(false);
   const [toast, setToast] = useState("");
   const [crop, setCrop] = useState("Wheat");
   const [customCrop, setCustomCrop] = useState("");
   const [quantity, setQuantity] = useState("20");
   const [quality, setQuality] = useState("FAQ Grade");
-  const [searchLocation, setSearchLocation] = useState("Mathura, Uttar Pradesh");
-  const [searchType, setSearchType] = useState("all");
+  const [askingPrice, setAskingPrice] = useState("");
   const [negotiationBuyer, setNegotiationBuyer] = useState(null);
   const [counterPrice, setCounterPrice] = useState("2750");
   const [chatMessage, setChatMessage] = useState("");
   const [chatMessages, setChatMessages] = useState([]);
-  const [transactions, setTransactions] = useState(DEMO_TRANSACTIONS);
+  const [transactions] = useState(DEMO_TRANSACTIONS);
   const [historyCrop, setHistoryCrop] = useState("All crops");
   const [historyPeriod, setHistoryPeriod] = useState("All time");
   const [newsFilter, setNewsFilter] = useState("All news");
   const [buyerSearch, setBuyerSearch] = useState("");
   const [savedCrops, setSavedCrops] = useState(INITIAL_CROPS.slice(0, 3));
-  const [offerStatus, setOfferStatus] = useState({});
   const [selectedTransaction, setSelectedTransaction] = useState(null);
 
   const effectiveCrop = crop === "Other" ? customCrop.trim() || "New crop" : crop;
@@ -128,13 +311,6 @@ function App() {
     return rows.sort((a, b) => b.net - a.net);
   }, [effectiveCrop, quantityNumber]);
 
-  const buyerResults = useMemo(() => {
-    const q = buyerSearch.toLowerCase();
-    return BUYERS.filter((buyer) =>
-      `${buyer.name} ${buyer.location} ${buyer.crops}`.toLowerCase().includes(q)
-    );
-  }, [buyerSearch]);
-
   const filteredTransactions = transactions.filter((item) => {
     const matchesCrop = historyCrop === "All crops" || item.crop === historyCrop;
     const matchesPeriod = historyPeriod === "All time" ||
@@ -145,6 +321,29 @@ function App() {
   function notify(message) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2800);
+  }
+
+  async function submitLogin(event) {
+    event.preventDefault();
+    setAuthError("");
+    setAuthLoading(true);
+
+    try {
+      const body = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          phone: login.phone,
+          password: login.password,
+        }),
+      });
+
+      await applyAuthenticatedUser(body.data.user, body.data.token);
+      notify("Welcome back to AgriBridge!");
+    } catch (error) {
+      setAuthError(error.message);
+    } finally {
+      setAuthLoading(false);
+    }
   }
 
   function signIn(selectedRole, mode = "login") {
@@ -159,13 +358,202 @@ function App() {
   }
 
   function logout() {
+    localStorage.removeItem("agribridge_token");
     setRole("");
     setPage("landing");
     setNegotiationBuyer(null);
     setToast("");
   }
 
+  async function createCropListing(event) {
+    event.preventDefault();
+    if (searchLocation.split(",").filter((part) => part.trim()).length < 2) {
+      setMarketplaceError("Enter both district and state, separated by a comma.");
+      return;
+    }
+
+    const location = parseLocation(searchLocation);
+
+    setMarketplaceLoading(true);
+    setMarketplaceError("");
+
+    try {
+      const body = await apiRequest("/api/crop-listings", {
+        method: "POST",
+        body: JSON.stringify({
+          cropName: effectiveCrop,
+          quantity: quantityNumber,
+          quantityUnit: "quintal",
+          condition: getListingCondition(quality),
+          ...(askingPrice !== "" && { askingPricePerQuintal: Number(askingPrice) }),
+          location,
+        }),
+      });
+
+      setMyCropListings((previous) => [body.data, ...previous]);
+      notify("Crop listing published successfully.");
+    } catch (error) {
+      setMarketplaceError(error.message);
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }
+
+  function startEditingListing(listing) {
+    setEditingListingId(listing._id);
+    setListingDraft({
+      cropName: listing.cropName,
+      quantity: String(listing.quantity),
+      quantityUnit: listing.quantityUnit,
+      condition: listing.condition,
+      askingPricePerQuintal: listing.askingPricePerQuintal ?? "",
+      state: listing.location?.state || "",
+      district: listing.location?.district || "",
+      village: listing.location?.village || "",
+    });
+    setMarketplaceError("");
+  }
+
+  async function saveListingChanges() {
+    if (!listingDraft || !editingListingId) return;
+
+    setMarketplaceLoading(true);
+    setMarketplaceError("");
+
+    try {
+      const body = await apiRequest(`/api/crop-listings/${editingListingId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          cropName: listingDraft.cropName.trim(),
+          quantity: Number(listingDraft.quantity),
+          quantityUnit: listingDraft.quantityUnit,
+          condition: listingDraft.condition,
+          ...(listingDraft.askingPricePerQuintal !== "" && {
+            askingPricePerQuintal: Number(listingDraft.askingPricePerQuintal),
+          }),
+          location: {
+            state: listingDraft.state.trim(),
+            district: listingDraft.district.trim(),
+            village: listingDraft.village.trim(),
+          },
+        }),
+      });
+
+      setMyCropListings((previous) =>
+        previous.map((listing) => (listing._id === editingListingId ? body.data : listing))
+      );
+      setEditingListingId("");
+      setListingDraft(null);
+      notify("Crop listing updated.");
+    } catch (error) {
+      setMarketplaceError(error.message);
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }
+
+  async function refreshOpenCropListings() {
+    setMarketplaceLoading(true);
+    setMarketplaceError("");
+
+    try {
+      const body = await apiRequest("/api/crop-listings?limit=50&sort=newest");
+      setOpenCropListings(body.data || []);
+    } catch (error) {
+      setMarketplaceError(error.message);
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }
+
+  async function refreshBuyerDemands() {
+    setMarketplaceLoading(true);
+    setMarketplaceError("");
+
+    try {
+      const body = await apiRequest("/api/buyer-demands?limit=50&sort=newest");
+      setOpenBuyerDemands(body.data || []);
+    } catch (error) {
+      setMarketplaceError(error.message);
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }
+
+  async function updateListingStatus(id, action) {
+    setMarketplaceLoading(true);
+    setMarketplaceError("");
+
+    try {
+      const body = await apiRequest(`/api/crop-listings/${id}/${action}`, {
+        method: "PATCH",
+        body: JSON.stringify(action === "sold" ? { saleChannel: "online" } : {}),
+      });
+
+      setMyCropListings((previous) =>
+        previous.map((listing) => (listing._id === id ? body.data : listing))
+      );
+      notify(action === "sold" ? "Crop marked as sold." : "Crop listing withdrawn.");
+    } catch (error) {
+      setMarketplaceError(error.message);
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }
+
+  async function createBuyerDemand(event) {
+    event.preventDefault();
+    setMarketplaceLoading(true);
+    setMarketplaceError("");
+
+    try {
+      const body = await apiRequest("/api/buyer-demands", {
+        method: "POST",
+        body: JSON.stringify({
+          cropName: buyerDemandDraft.cropName.trim(),
+          quantity: Number(buyerDemandDraft.quantity),
+          quantityUnit: "quintal",
+          offeredPricePerQuintal: Number(buyerDemandDraft.offeredPricePerQuintal),
+          location: {
+            state: buyerDemandDraft.state.trim(),
+            district: buyerDemandDraft.district.trim(),
+          },
+        }),
+      });
+
+      setMyBuyerDemands((previous) => [body.data, ...previous]);
+      notify("Buyer demand published successfully.");
+    } catch (error) {
+      setMarketplaceError(error.message);
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }
+
+  async function updateBuyerDemandStatus(id, action) {
+    setMarketplaceLoading(true);
+    setMarketplaceError("");
+
+    try {
+      const body = await apiRequest(`/api/buyer-demands/${id}/${action}`, {
+        method: "PATCH",
+      });
+
+      setMyBuyerDemands((previous) =>
+        previous.map((demand) =>
+          demand._id === id ? { ...demand, status: body.data.status } : demand
+        )
+      );
+      notify(action === "cancel" ? "Buyer demand cancelled." : "Buyer demand marked fulfilled.");
+    } catch (error) {
+      setMarketplaceError(error.message);
+    } finally {
+      setMarketplaceLoading(false);
+    }
+  }
+
   function navigate(nextPage) {
+    setAuthError("");
     setPage(nextPage);
     setNegotiationBuyer(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -217,11 +605,6 @@ function App() {
     notify("Counter-offer sent in this demo.");
   }
 
-  function acceptOffer(buyer) {
-    setOfferStatus((previous) => ({ ...previous, [buyer.id]: "Accepted" }));
-    notify(`Offer from ${buyer.name} accepted in this demo.`);
-  }
-
   function renderLanding() {
     return (
       <div className="landing-page">
@@ -266,7 +649,7 @@ function App() {
 
         <section className="role-cta">
           <div><span className="eyebrow">GET STARTED TODAY</span><h2>Choose how you'll use AgriBridge.</h2><p>Try the prototype with a demo farmer or buyer account.</p></div>
-          <div className="role-buttons"><button className="button button-primary" onClick={() => signIn("farmer", "register")}>Continue as farmer <span>→</span></button><button className="button button-outline" onClick={() => signIn("buyer", "register")}>Continue as buyer <span>→</span></button></div>
+          <div className="role-buttons"><button className="button button-primary" onClick={() => { setRegistration((current) => ({ ...current, role: "farmer" })); navigate("register"); }}>Continue as farmer <span>→</span></button><button className="button button-outline" onClick={() => { setRegistration((current) => ({ ...current, role: "buyer" })); navigate("register"); }}>Continue as buyer <span>→</span></button></div>
         </section>
         <PublicFooter />
       </div>
@@ -283,7 +666,7 @@ function App() {
         </header>
         <section className="about-hero" id="about-story"><div><span className="eyebrow">ABOUT AGRIBRIDGE</span><h1>Making agricultural trade <em>clearer and fairer.</em></h1><p>AgriBridge is a farmer-first agricultural marketplace that brings market insights, buyer connections and decision-support tools into one accessible experience.</p><button className="button button-primary" onClick={() => navigate("register")}>Get started <span>→</span></button></div><img src="https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=85" alt="A young plant growing in rich soil" onError={(event) => { event.currentTarget.style.display = "none"; event.currentTarget.parentElement.classList.add("image-unavailable"); }} /></section>
         <section className="about-pillars" id="about-features">{[{icon:"◎",title:"Our mission",text:"Help farmers make informed selling decisions and reach better opportunities."},{icon:"◉",title:"Our vision",text:"A stronger, more transparent agricultural marketplace for every participant."},{icon:"♧",title:"What we do",text:"Connect farmers and buyers with market information, negotiation and profit estimates."},{icon:"♙",title:"Our impact",text:"Support clearer pricing, better preparation and more confident transactions."}].map((item)=><article key={item.title}><span>{item.icon}</span><h3>{item.title}</h3><p>{item.text}</p></article>)}</section>
-        <section className="about-contact" id="about-contact"><div><span className="eyebrow">START WITH A BETTER DECISION</span><h2>Built around real agricultural decisions.</h2><p>Explore the demo as a farmer or buyer and see how the workflows fit together.</p></div><div className="role-buttons"><button className="button button-primary" onClick={() => signIn("farmer", "register")}>Continue as farmer <span>→</span></button><button className="button button-outline" onClick={() => signIn("buyer", "register")}>Continue as buyer <span>→</span></button></div></section>
+        <section className="about-contact" id="about-contact"><div><span className="eyebrow">START WITH A BETTER DECISION</span><h2>Built around real agricultural decisions.</h2><p>Create a real account as a farmer or buyer and see how the workflows fit together.</p></div><div className="role-buttons"><button className="button button-primary" onClick={() => { setRegistration((current) => ({ ...current, role: "farmer" })); navigate("register"); }}>Continue as farmer <span>→</span></button><button className="button button-outline" onClick={() => { setRegistration((current) => ({ ...current, role: "buyer" })); navigate("register"); }}>Continue as buyer <span>→</span></button></div></section>
         <PublicFooter />
       </div>
     );
@@ -296,16 +679,16 @@ function App() {
         <button className="brand auth-brand" onClick={() => navigate("landing")}><span className="brand-mark">a.</span><span>AgriBridge<span className="brand-dot">.</span></span></button>
         <div className={`auth-layout ${isRegister ? "auth-layout-register" : ""}`}>
         <div className="auth-card">
-          <div className="auth-heading"><span className="eyebrow">{isRegister ? "JOIN AGRIBRIDGE" : "WELCOME BACK"}</span><h1>{isRegister ? "Create your account" : "Log in to AgriBridge"}</h1><p>{isRegister ? "Add your details to get started." : "Select your demo account to continue."}</p></div>
+          <div className="auth-heading"><span className="eyebrow">{isRegister ? "JOIN AGRIBRIDGE" : "WELCOME BACK"}</span><h1>{isRegister ? "Create your account" : "Log in to AgriBridge"}</h1><p>{isRegister ? "Add your details to get started." : "Enter your registered phone number and password."}</p></div>
           {isRegister ? (
             <form className="registration-form" onSubmit={submitRegistration}>
               <label className="field-label">Full name<input className="field-control" autoComplete="name" placeholder="Enter your full name" value={registration.name} onChange={(event) => updateRegistration("name", event.target.value)} required /></label>
               <div className="registration-grid">
                 <label className="field-label">Phone number<input className="field-control" type="tel" autoComplete="tel" inputMode="tel" pattern="[+0-9()\- ]{7,20}" placeholder="Enter phone number" value={registration.phone} onChange={(event) => updateRegistration("phone", event.target.value)} required /></label>
-                <label className="field-label">Email ID<input className="field-control" type="email" autoComplete="email" placeholder="you@example.com" value={registration.email} onChange={(event) => updateRegistration("email", event.target.value)} required /></label>
+                <label className="field-label">Email ID (optional)<input className="field-control" type="email" autoComplete="email" placeholder="you@example.com" value={registration.email} onChange={(event) => updateRegistration("email", event.target.value)} /></label>
               </div>
-              <label className="field-label">Password<div className="password-input-wrap"><input className="field-control" type={showRegistrationPassword ? "text" : "password"} autoComplete="new-password" minLength="6" placeholder="Create a password (6+ characters)" value={registration.password} onChange={(event) => updateRegistration("password", event.target.value)} required /><button className="password-eye" type="button" aria-label={showRegistrationPassword ? "Hide password" : "Show password"} title={showRegistrationPassword ? "Hide password" : "Show password"} onClick={() => setShowRegistrationPassword((visible) => !visible)}>{showRegistrationPassword ? "Hide" : "Show"}</button></div></label>
-              <label className="field-label">Confirm password<div className="password-input-wrap"><input className="field-control" type={showConfirmPassword ? "text" : "password"} autoComplete="new-password" minLength="6" placeholder="Re-enter your password" value={registration.confirmPassword} onChange={(event) => updateRegistration("confirmPassword", event.target.value)} required /></div><button className="password-eye confirm-password-eye" type="button" aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"} title={showConfirmPassword ? "Hide password" : "Show password"} onClick={() => setShowConfirmPassword((visible) => !visible)}>{showConfirmPassword ? "Hide" : "Show"}</button></label>
+              <label className="field-label">Password<div className="password-input-wrap"><input className="field-control" type={showRegistrationPassword ? "text" : "password"} autoComplete="new-password" minLength="8" maxLength="72" placeholder="Create a password (8+ characters)" value={registration.password} onChange={(event) => updateRegistration("password", event.target.value)} required /><button className="password-eye" type="button" aria-label={showRegistrationPassword ? "Hide password" : "Show password"} title={showRegistrationPassword ? "Hide password" : "Show password"} onClick={() => setShowRegistrationPassword((visible) => !visible)}>{showRegistrationPassword ? "Hide" : "Show"}</button></div></label>
+              <label className="field-label">Confirm password<div className="password-input-wrap"><input className="field-control" type={showConfirmPassword ? "text" : "password"} autoComplete="new-password" minLength="8" maxLength="72" placeholder="Re-enter your password" value={registration.confirmPassword} onChange={(event) => updateRegistration("confirmPassword", event.target.value)} required /></div><button className="password-eye confirm-password-eye" type="button" aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"} title={showConfirmPassword ? "Hide password" : "Show password"} onClick={() => setShowConfirmPassword((visible) => !visible)}>{showConfirmPassword ? "Hide" : "Show"}</button></label>
               <label className="field-label">Role<select className="field-control" value={registration.role} onChange={(event) => updateRegistration("role", event.target.value)}><option value="farmer">Farmer</option><option value="buyer">Buyer</option></select></label>
               <div className="registration-section-label">YOUR LOCATION</div>
               <div className="registration-grid registration-location-grid">
@@ -313,20 +696,18 @@ function App() {
                 <label className="field-label">District<input className="field-control" autoComplete="address-level2" placeholder="Enter district" value={registration.district} onChange={(event) => updateRegistration("district", event.target.value)} required /></label>
                 <label className="field-label registration-village">Village<input className="field-control" autoComplete="address-level3" placeholder="Enter village" value={registration.village} onChange={(event) => updateRegistration("village", event.target.value)} required /></label>
               </div>
-              <button className="button button-primary registration-submit" type="submit">Create account <span>→</span></button>
+              {authError && <p className="auth-error" role="alert">{authError}</p>}
+              <button className="button button-primary registration-submit" type="submit" disabled={authLoading}>{authLoading ? "Creating account…" : "Create account"} <span>→</span></button>
             </form>
           ) : (
-            <>
-              <label className="field-label">Email or mobile number<input className="field-control" placeholder="demo@agribridge.in" defaultValue="demo@agribridge.in" /></label>
-              <label className="field-label login-password-label">Password<div className="password-input-wrap"><input className="field-control" placeholder="Demo password" type={showLoginPassword ? "text" : "password"} defaultValue="agribridge" /><button className="password-eye" type="button" aria-label={showLoginPassword ? "Hide password" : "Show password"} title={showLoginPassword ? "Hide password" : "Show password"} onClick={() => setShowLoginPassword((visible) => !visible)}>{showLoginPassword ? "Hide" : "Show"}</button></div></label>
-              <div className="role-choice-label">CONTINUE AS</div>
-              <div className="role-choice-grid">
-                <button className="role-choice" onClick={() => signIn("farmer", "login")}><span className="role-choice-icon">♧</span><strong>Farmer</strong><small>Sell crops and track earnings</small><span className="role-choice-arrow">→</span></button>
-                <button className="role-choice" onClick={() => signIn("buyer", "login")}><span className="role-choice-icon buyer-icon">▤</span><strong>Buyer</strong><small>Find produce and manage offers</small><span className="role-choice-arrow">→</span></button>
-              </div>
-            </>
+            <form className="registration-form" onSubmit={submitLogin}>
+              <label className="field-label">Phone number<input className="field-control" type="tel" autoComplete="tel" inputMode="tel" placeholder="Enter your phone number" value={login.phone} onChange={(event) => setLogin((current) => ({ ...current, phone: event.target.value }))} required /></label>
+              <label className="field-label login-password-label">Password<div className="password-input-wrap"><input className="field-control" placeholder="Enter your password" type={showLoginPassword ? "text" : "password"} autoComplete="current-password" value={login.password} onChange={(event) => setLogin((current) => ({ ...current, password: event.target.value }))} required /><button className="password-eye" type="button" aria-label={showLoginPassword ? "Hide password" : "Show password"} title={showLoginPassword ? "Hide password" : "Show password"} onClick={() => setShowLoginPassword((visible) => !visible)}>{showLoginPassword ? "Hide" : "Show"}</button></div></label>
+              {authError && <p className="auth-error" role="alert">{authError}</p>}
+              <button className="button button-primary registration-submit" type="submit" disabled={authLoading}>{authLoading ? "Logging in…" : "Log in"} <span>→</span></button>
+            </form>
           )}
-          <p className="auth-note"><Icon>i</Icon> Demo mode only. Details are not saved to a server.</p>
+          <p className="auth-note"><Icon>i</Icon> Your account is securely authenticated by the AgriBridge server.</p>
           <p className="auth-switch">{isRegister ? "Already have an account?" : "New to AgriBridge?"} <button onClick={() => navigate(isRegister ? "login" : "register")}>{isRegister ? "Log in" : "Create account"}</button></p>
           <button className="back-link" onClick={() => navigate("landing")}>← Back to home</button>
         </div>
@@ -383,7 +764,7 @@ function App() {
         <div className="welcome-banner"><div><span className="eyebrow">{isBuyer ? "BUYER WORKSPACE" : "YOUR FARMER WORKSPACE"}</span><h1>{greeting}, {userName.split(" ")[0]} <span className="wave">✳</span></h1><p>{isBuyer ? "Find quality produce, manage offers and keep your procurement moving." : "What would you like to do today? Your next selling decision starts here."}</p></div><div className="welcome-art"><span>♧</span><small>{isBuyer ? "SMARTER SOURCING" : "GROW. COMPARE. EARN."}</small></div></div>
         <div className="metric-grid">
           <MetricCard label={isBuyer ? "Purchases completed" : "Total net earnings"} value={isBuyer ? "12" : formatMoney(farmerTotalEarnings)} note={isBuyer ? "Across your demo account" : "From 3 completed demo sales"} icon="₹" />
-          <MetricCard label={isBuyer ? "Open purchase requests" : "Active deals"} value={isBuyer ? "4" : "2"} note={isBuyer ? "Awaiting supplier response" : "1 offer · 1 negotiation"} icon="⇄" tone="metric-green" />
+          <MetricCard label={isBuyer ? "Open purchase requests" : "Active buyer demands"} value={isBuyer ? "4" : openBuyerDemands.length} note={isBuyer ? "Awaiting supplier response" : "Open requests in the marketplace"} icon="⇄" tone="metric-green" />
           <MetricCard label={isBuyer ? "Offers to review" : "Saved crops"} value={isBuyer ? "3" : savedCrops.length} note={isBuyer ? "Respond when you're ready" : "Your frequently sold crops"} icon="▤" tone="metric-gold" />
         </div>
         <div className="section-title-row"><div><h2>What would you like to do?</h2><p>Choose a task to get started.</p></div></div>
@@ -395,6 +776,7 @@ function App() {
             { id: "news", icon: "◉", title: "Market news", text: "Follow crops and markets that matter", cta: "Read updates", tone: "purple" },
           ] : [
             { id: "sell", icon: "↗", title: "Sell produce", text: "Compare mandis, buyers and estimated returns", cta: "Find best option", tone: "green" },
+            { id: "active-demand", icon: "⌕", title: "Active buyer demand", text: "See what crops buyers are looking for", cta: "Browse demands", tone: "gold" },
             { id: "history", icon: "▤", title: "Selling history", text: "Review sales, expenses and net profit", cta: "View transactions", tone: "gold" },
             { id: "news", icon: "◉", title: "Mandi news", text: "See crop and local market updates", cta: "Read updates", tone: "blue" },
             { id: "crops", icon: "♧", title: "My crops", text: "Manage your usual crops and preferences", cta: "Manage crops", tone: "purple" },
@@ -409,33 +791,59 @@ function App() {
   }
 
   function renderSellPage() {
-    const selectedCrop = effectiveCrop;
     return (
       <>
-        <PageHeading eyebrow="SELL PRODUCE" title="Find your best selling option." description="Compare potential buyers and mandis by expected return, not just the listed price." action={<button className="button button-outline" onClick={() => navigate("crops")}>♧ My saved crops</button>} />
-        <div className="sell-stepper"><div className="sell-step active"><span>1</span><strong>Select crop</strong></div><i></i><div className="sell-step active"><span>2</span><strong>Enter details</strong></div><i></i><div className="sell-step"><span>3</span><strong>Find buyers</strong></div><i></i><div className="sell-step"><span>4</span><strong>AI suggestion</strong></div></div>
-        <section className="panel sell-form-panel">
-          <div className="form-section-heading"><span className="step-badge">01</span><div><h2>Tell us about your produce</h2><p>Use your saved crop or enter a new one.</p></div></div>
+        <PageHeading eyebrow="SELL PRODUCE" title="Manage crop listings." description="Publish a listing, edit its details, or update its status." action={<button className="button button-outline" onClick={() => navigate("crops")}>♧ My saved crops</button>} />
+        <form className="panel sell-form-panel" onSubmit={createCropListing}>
+          <div className="form-section-heading"><div><h2>Publish a crop listing</h2><p>Add the details farmers will see in the marketplace.</p></div></div>
           <div className="sell-form-grid">
             <label className="field-label">CROP TYPE<select className="field-control" value={crop} onChange={(event) => setCrop(event.target.value)}>{[...new Set([...savedCrops, ...INITIAL_CROPS]), "Other"].map((item) => <option key={item}>{item}</option>)}</select></label>
             {crop === "Other" && <label className="field-label">NEW CROP NAME<input className="field-control" value={customCrop} onChange={(event) => setCustomCrop(event.target.value)} placeholder="Enter crop name" /></label>}
-            <label className="field-label">QUANTITY (QUINTALS)<input className="field-control" type="number" min="0.1" max="100000" step="0.1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
-            <label className="field-label">CROP CONDITION<select className="field-control" value={quality} onChange={(event) => setQuality(event.target.value)}><option>FAQ Grade</option><option>Grade A</option><option>Grade B</option><option>Organic (self-reported)</option><option>Needs inspection</option></select></label>
-            <label className="field-label">SELLING AREA<input className="field-control" value={searchLocation} onChange={(event) => setSearchLocation(event.target.value)} /></label>
+            <label className="field-label">QUANTITY (QUINTALS)<input className="field-control" type="number" min="0.1" max="100000" step="0.1" value={quantity} onChange={(event) => setQuantity(event.target.value)} required /></label>
+            <label className="field-label">CONDITION<select className="field-control" value={quality} onChange={(event) => setQuality(event.target.value)}><option>FAQ Grade</option><option>Grade A</option><option>Grade B</option><option>Organic (self-reported)</option><option>Needs inspection</option></select></label>
+            <label className="field-label">ASKING PRICE / QUINTAL (OPTIONAL)<input className="field-control" type="number" min="0" step="1" value={askingPrice} onChange={(event) => setAskingPrice(event.target.value)} placeholder="Leave blank to negotiate" /></label>
+            <label className="field-label">SELLING AREA (DISTRICT, STATE)<input className="field-control" value={searchLocation} onChange={(event) => setSearchLocation(event.target.value)} placeholder="Mathura, Uttar Pradesh" required /></label>
           </div>
-          <div className="form-bottom-row"><span className="inline-info"><Icon>i</Icon> Your location is prefilled. You can edit it above or in the header.</span><button className="button button-primary" disabled={!quantityNumber || quantityNumber > 100000 || (crop === "Other" && !customCrop.trim())} onClick={() => { setSearchType("all"); document.getElementById("market-results")?.scrollIntoView({ behavior: "smooth" }); notify("Showing illustrative demo estimates."); }}>Find buyers & mandis <span>→</span></button></div>
-        </section>
+          {marketplaceError && <p className="auth-error" role="alert">{marketplaceError}</p>}
+          <div className="sell-form-actions"><button className="button button-primary" type="submit" disabled={marketplaceLoading || !quantityNumber || quantityNumber > 100000 || (crop === "Other" && !customCrop.trim())}>{marketplaceLoading ? "Publishing…" : "Publish listing"} <span>→</span></button></div>
+        </form>
 
-        <section className="recommendation-panel">
-          <div className="recommendation-mark">✳</div><div className="recommendation-copy"><span className="eyebrow">AGRIBRIDGE AI ASSISTANT · DEMO</span><h2>Start with net return—not just price.</h2><p>For {quantityNumber || 0} quintals of {selectedCrop}, compare each destination's listed price against transport, handling and commission estimates. The top result below is the highest calculated demo net return, not a live AI prediction.</p><div className="reason-tags"><span>✓ Expense-aware comparison</span><span>✓ Distance included</span><span>i Sample data</span></div></div>
-          <div className="recommendation-result"><small>TOP DEMO ESTIMATE</small><strong>{formatMoney(marketResults[0]?.net || 0)}</strong><span>{marketResults[0]?.name || "No result"} · net return</span></div>
+        <section className="panel history-panel">
+          <div className="panel-heading"><div><h2>Your crop listings</h2><p>Edit details or update listing status.</p></div></div>
+          {myCropListings.length === 0 ? (
+            <div className="empty-state"><span>♧</span><h3>No crop listings yet</h3><p>Publish the produce details above to create one.</p></div>
+          ) : (
+            <div className="crop-listing-list">{myCropListings.map((listing) => (
+              <article className="crop-listing-card" key={listing._id}>
+                {editingListingId === listing._id && listingDraft ? (
+                  <form className="crop-listing-edit" onSubmit={(event) => { event.preventDefault(); saveListingChanges(); }}>
+                    <label className="field-label">CROP NAME<input className="field-control" value={listingDraft.cropName} onChange={(event) => setListingDraft((current) => ({ ...current, cropName: event.target.value }))} required /></label>
+                    <label className="field-label">QUANTITY<input className="field-control" type="number" min="0.01" step="0.01" value={listingDraft.quantity} onChange={(event) => setListingDraft((current) => ({ ...current, quantity: event.target.value }))} required /></label>
+                    <label className="field-label">UNIT<select className="field-control" value={listingDraft.quantityUnit} onChange={(event) => setListingDraft((current) => ({ ...current, quantityUnit: event.target.value }))}><option value="kg">kg</option><option value="quintal">quintal</option><option value="tonne">tonne</option></select></label>
+                    <label className="field-label">CONDITION<select className="field-control" value={listingDraft.condition} onChange={(event) => setListingDraft((current) => ({ ...current, condition: event.target.value }))}><option value="standard">Standard</option><option value="good">Good</option><option value="premium">Premium</option></select></label>
+                    <label className="field-label">PRICE / QUINTAL<input className="field-control" type="number" min="0" step="1" value={listingDraft.askingPricePerQuintal} onChange={(event) => setListingDraft((current) => ({ ...current, askingPricePerQuintal: event.target.value }))} placeholder="Optional" /></label>
+                    <label className="field-label">DISTRICT<input className="field-control" value={listingDraft.district} onChange={(event) => setListingDraft((current) => ({ ...current, district: event.target.value }))} required /></label>
+                    <label className="field-label">STATE<input className="field-control" value={listingDraft.state} onChange={(event) => setListingDraft((current) => ({ ...current, state: event.target.value }))} required /></label>
+                    <label className="field-label">VILLAGE<input className="field-control" value={listingDraft.village} onChange={(event) => setListingDraft((current) => ({ ...current, village: event.target.value }))} /></label>
+                    <div className="crop-listing-actions"><button className="button button-primary" type="submit" disabled={marketplaceLoading}>{marketplaceLoading ? "Saving…" : "Save changes"}</button><button className="button button-outline" type="button" onClick={() => { setEditingListingId(""); setListingDraft(null); }}>Cancel</button></div>
+                  </form>
+                ) : (
+                  <>
+                    <div className="crop-listing-summary">
+                      <div><h3>{listing.cropName}</h3><p>{listing.quantity} {listing.quantityUnit} · {listing.location?.district}, {listing.location?.state}</p></div>
+                      <div><strong>{listing.askingPricePerQuintal !== undefined ? formatMoney(listing.askingPricePerQuintal) : "Negotiable"}</strong><small>per quintal</small></div>
+                      <span className={`status-pill ${listing.status === "sold" ? "success" : "pending"}`}>{listing.status}</span>
+                    </div>
+                    <div className="crop-listing-actions">
+                      {["available", "negotiating"].includes(listing.status) && <button className="button button-outline" onClick={() => startEditingListing(listing)}>Edit</button>}
+                      {listing.status === "available" && <><button className="button button-primary" onClick={() => updateListingStatus(listing._id, "sold")} disabled={marketplaceLoading}>Mark sold</button><button className="button button-outline" onClick={() => updateListingStatus(listing._id, "withdraw")} disabled={marketplaceLoading}>Withdraw</button></>}
+                    </div>
+                  </>
+                )}
+              </article>
+            ))}</div>
+          )}
         </section>
-
-        <div className="section-title-row results-title" id="market-results"><div><span className="eyebrow">AVAILABLE OPTIONS</span><h2>Compare buyers and mandis</h2><p>{quantityNumber} quintals · {quality} · {searchLocation}</p></div><label className="compact-filter"><span>SHOW</span><select value={searchType} onChange={(event) => setSearchType(event.target.value)}><option value="all">All options</option><option value="mandi">Mandis</option><option value="buyer">Buyers</option></select></label></div>
-        <div className="market-option-list">
-          {searchType !== "buyer" && marketResults.map((market, index) => <article className={`market-option ${index === 0 ? "recommended-option" : ""}`} key={market.id}><div className="option-main"><div className="option-avatar">{market.type === "Mandi" ? "⌂" : "▤"}</div><div className="option-name"><div className="option-title-row"><h3>{market.name}</h3>{index === 0 && <span className="recommended-tag">TOP ESTIMATED RETURN</span>}</div><p>{market.distance} km away · {market.buyers} active buyers · {market.freshness}</p><span className="option-note">{market.note}</span></div></div><div className="option-metrics"><div><small>PRICE / QUINTAL</small><strong>{formatMoney(market.price)}</strong></div><div><small>EST. EXPENSES</small><strong>{formatMoney(market.costs)}</strong></div><div className="net-metric"><small>EST. NET RETURN</small><strong>{formatMoney(market.net)}</strong></div></div><div className="option-footer"><span className="inline-info"><Icon>i</Icon> Estimate for this shipment; verify final charges before selling.</span><button className="button button-outline" onClick={() => notify(`Details for ${market.name}: price and expenses are illustrative demo values.`)}>View details</button><button className="button button-primary" onClick={() => openNegotiation({ ...market, name: market.name, price: market.price, location: searchLocation })}>Contact / negotiate <span>→</span></button></div></article>)}
-          {searchType !== "mandi" && BUYERS.map((buyer) => <article className="market-option" key={buyer.id}><div className="option-main"><div className="option-avatar buyer-avatar">▤</div><div className="option-name"><div className="option-title-row"><h3>{buyer.name} {buyer.verified && <span className="verified-mark">✓ Verified demo</span>}</h3></div><p>{buyer.location} · {buyer.distance} km away · Rating {buyer.rating}/5</p><span className="option-note">{buyer.crops} · {buyer.quantity} · Payment: {buyer.payment}</span></div></div><div className="option-metrics"><div><small>INDICATIVE OFFER</small><strong>{formatMoney(buyer.price)}</strong></div><div><small>PAYMENT</small><strong className="small-metric">{buyer.payment}</strong></div><div className="net-metric"><small>EST. NET AFTER COSTS</small><strong>{formatMoney(buyer.price * quantityNumber - buyer.distance * 22 - 450)}</strong></div></div><div className="option-footer"><span className="inline-info"><Icon>i</Icon> Indicative demo offer; terms require confirmation.</span><button className="button button-outline" onClick={() => notify(`${buyer.name}: ${buyer.crops}; ${buyer.payment}. Demo profile.`)}>View profile</button><button className="button button-primary" onClick={() => openNegotiation(buyer)}>Negotiate <span>→</span></button></div></article>)}
-        </div>
       </>
     );
   }
@@ -466,7 +874,6 @@ function App() {
   }
 
   function renderCrops() {
-    const [unused] = [null];
     return (
       <>
         <PageHeading eyebrow="YOUR PRODUCE" title="My crops." description="Keep your usual crops handy to make future selling searches faster." />
@@ -478,9 +885,48 @@ function App() {
   function renderBuyerPage() {
     return (
       <>
-        <PageHeading eyebrow="PROCUREMENT MARKETPLACE" title="Find produce to buy." description="Browse illustrative supplier listings and start a conversation about price, quality and delivery." />
-        <section className="panel buyer-search-panel"><label className="search-box"><Icon>⌕</Icon><input value={buyerSearch} onChange={(event) => setBuyerSearch(event.target.value)} placeholder="Search crop, buyer or location…" /></label><label className="compact-filter"><span>LOCATION</span><select value={searchLocation} onChange={(event) => setSearchLocation(event.target.value)}><option>Mathura, Uttar Pradesh</option><option>Agra, Uttar Pradesh</option><option>Hathras, Uttar Pradesh</option></select></label></section>
-        <div className="buyer-listings">{buyerResults.map((buyer) => <article className="buyer-listing panel" key={buyer.id}><div className="buyer-listing-top"><div className="buyer-avatar-large">{buyer.name.charAt(0)}</div><div className="buyer-listing-title"><h2>{buyer.crops.split(",")[0]} available from {buyer.name}</h2><p>{buyer.location} · {buyer.distance} km away</p></div><span className="verified-mark">✓ Verified demo</span></div><div className="buyer-listing-metrics"><div><small>INDICATIVE PRICE</small><strong>{formatMoney(buyer.price)}<small> / quintal</small></strong></div><div><small>AVAILABLE QUANTITY</small><strong>{buyer.quantity}</strong></div><div><small>QUALITY</small><strong>FAQ / Grade A</strong></div><div><small>PAYMENT TERMS</small><strong>{buyer.payment}</strong></div></div><div className="buyer-listing-bottom"><span className="inline-info"><Icon>i</Icon> Supplier and price details are sample data.</span><button className="button button-outline" onClick={() => notify(`Demo supplier ${buyer.name} profile opened.`)}>View details</button><button className="button button-primary" onClick={() => openNegotiation(buyer)}>Contact supplier <span>→</span></button></div></article>)}{buyerResults.length === 0 && <div className="empty-state"><span>⌕</span><h3>No matching listings</h3><p>Try a different crop or location.</p></div>}</div>
+        <PageHeading eyebrow="PROCUREMENT MARKETPLACE" title="Find produce to buy." description="Browse real available crop listings published by farmers." />
+        <section className="panel buyer-search-panel"><label className="search-box"><Icon>⌕</Icon><input value={buyerSearch} onChange={(event) => setBuyerSearch(event.target.value)} placeholder="Search crop or location…" /></label><button className="button button-outline" onClick={refreshOpenCropListings} disabled={marketplaceLoading}>{marketplaceLoading ? "Loading…" : "Refresh listings"}</button></section>
+        {marketplaceError && <p className="auth-error" role="alert">{marketplaceError}</p>}
+        <div className="buyer-listings">{openCropListings.filter((listing) => `${listing.cropName} ${listing.location?.district} ${listing.location?.state}`.toLowerCase().includes(buyerSearch.toLowerCase())).map((listing) => <article className="buyer-listing panel" key={listing._id}><div className="buyer-listing-top"><div className="buyer-avatar-large">{listing.cropName?.charAt(0).toUpperCase()}</div><div className="buyer-listing-title"><h2>{listing.cropName}</h2><p>{listing.location?.district}, {listing.location?.state}</p></div><span className="verified-mark">✓ Server listing</span></div><div className="buyer-listing-metrics"><div><small>ASKING PRICE</small><strong>{listing.askingPricePerQuintal !== undefined ? formatMoney(listing.askingPricePerQuintal) : "Negotiable"}<small> / quintal</small></strong></div><div><small>AVAILABLE QUANTITY</small><strong>{listing.quantity} {listing.quantityUnit}</strong></div><div><small>QUALITY</small><strong>{listing.condition}</strong></div><div><small>PUBLISHED</small><strong>{new Date(listing.createdAt).toLocaleDateString("en-IN")}</strong></div></div><div className="buyer-listing-bottom"><span className="inline-info"><Icon>i</Icon> Contact and negotiation are demo-only until backend chat support is added.</span><button className="button button-primary" onClick={() => notify("Listing details saved. Backend deal negotiation is not available yet.")}>View listing <span>→</span></button></div></article>)}{openCropListings.length > 0 && openCropListings.filter((listing) => `${listing.cropName} ${listing.location?.district} ${listing.location?.state}`.toLowerCase().includes(buyerSearch.toLowerCase())).length === 0 && <div className="empty-state"><span>⌕</span><h3>No matching listings</h3><p>Try another crop or location.</p></div>}{openCropListings.length === 0 && !marketplaceLoading && <div className="empty-state"><span>⌕</span><h3>No crop listings available</h3><p>Ask a farmer to publish a crop listing.</p></div>}</div>
+      </>
+    );
+  }
+
+  function renderActiveDemandsPage() {
+    return (
+      <>
+        <PageHeading
+          eyebrow="OPEN BUYER REQUESTS"
+          title="Active buyer demand."
+          description="See what buyers are looking for and the price and quantity they are offering."
+          action={<button className="button button-outline" onClick={refreshBuyerDemands} disabled={marketplaceLoading}>{marketplaceLoading ? "Refreshing…" : "Refresh"}</button>}
+        />
+        {marketplaceError && <p className="auth-error" role="alert">{marketplaceError}</p>}
+        <div className="buyer-listings">
+          {openBuyerDemands.map((demand) => (
+            <article className="buyer-listing panel" key={demand._id}>
+              <div className="buyer-listing-top">
+                <div className="buyer-avatar-large">{demand.cropName?.charAt(0).toUpperCase()}</div>
+                <div className="buyer-listing-title">
+                  <h2>{demand.cropName}</h2>
+                  <p>{demand.location?.district}, {demand.location?.state}</p>
+                </div>
+                <span className="status-pill success">Open</span>
+              </div>
+              <div className="buyer-listing-metrics">
+                <div><small>QUANTITY NEEDED</small><strong>{demand.quantity} {demand.quantityUnit}</strong></div>
+                <div><small>OFFER / QUINTAL</small><strong>{formatMoney(demand.offeredPricePerQuintal)}</strong></div>
+                <div><small>POSTED</small><strong>{new Date(demand.createdAt).toLocaleDateString("en-IN")}</strong></div>
+                {demand.expiresAt && <div><small>EXPIRES</small><strong>{new Date(demand.expiresAt).toLocaleDateString("en-IN")}</strong></div>}
+              </div>
+              {demand.description && <p className="demand-description">{demand.description}</p>}
+            </article>
+          ))}
+          {openBuyerDemands.length === 0 && !marketplaceLoading && !marketplaceError && (
+            <div className="empty-state"><span>⌕</span><h3>No active buyer demands</h3><p>New buyer requests will appear here when posted.</p></div>
+          )}
+        </div>
       </>
     );
   }
@@ -488,8 +934,20 @@ function App() {
   function renderOffers() {
     return (
       <>
-        <PageHeading eyebrow="OFFER MANAGEMENT" title="Offers and negotiations." description="Review incoming proposals, respond with your terms and keep a record of each decision." />
-        <div className="offer-list">{[{ id: "o1", name: "Ramesh Kumar", crop: "Wheat · 20 quintals", price: 2600, location: "Mathura, UP", state: "Needs response" }, { id: "o2", name: "Sita Devi", crop: "Rice · 15 quintals", price: 3150, location: "Hathras, UP", state: "Counter-offer received" }, { id: "o3", name: "Mohan Singh", crop: "Potato · 30 quintals", price: 1420, location: "Agra, UP", state: "Needs response" }].map((offer) => <article className="panel offer-card" key={offer.id}><div className="offer-card-head"><div className="buyer-avatar-large">{offer.name.charAt(0)}</div><div><h2>{offer.name}</h2><p>{offer.crop} · {offer.location}</p></div><span className={`status-pill ${offerStatus[offer.id] === "Accepted" ? "success" : "pending"}`}>{offerStatus[offer.id] || offer.state}</span></div><div className="offer-price-row"><div><small>OFFERED PRICE</small><strong>{formatMoney(offer.price)} <small>/ quintal</small></strong></div><div><small>INDICATIVE TOTAL</small><strong>{formatMoney(offer.price * (offer.id === "o1" ? 20 : offer.id === "o2" ? 15 : 30))}</strong></div></div><div className="offer-actions"><button className="button button-outline" onClick={() => openNegotiation({ ...offer, id: offer.id, price: offer.price, name: offer.name })}>Counter / chat</button><button className="button button-primary" disabled={offerStatus[offer.id] === "Accepted"} onClick={() => acceptOffer({ ...offer, id: offer.id })}>{offerStatus[offer.id] === "Accepted" ? "Accepted" : "Accept offer"} <span>✓</span></button><button className="button button-danger-quiet" onClick={() => { setOfferStatus((previous) => ({ ...previous, [offer.id]: "Rejected" })); notify("Offer rejected in this demo."); }}>Reject</button></div></article>)}</div>
+        <PageHeading eyebrow="PURCHASE DEMANDS" title="Your buyer demands." description="Publish a crop requirement and manage whether it is open, fulfilled or cancelled." />
+        <form className="panel crops-panel" onSubmit={createBuyerDemand}>
+          <div className="panel-heading"><div><h2>Create purchase demand</h2><p>This request is saved through the AgriBridge backend.</p></div></div>
+          <div className="sell-form-grid">
+            <label className="field-label">CROP NAME<input className="field-control" value={buyerDemandDraft.cropName} onChange={(event) => setBuyerDemandDraft((current) => ({ ...current, cropName: event.target.value }))} required /></label>
+            <label className="field-label">QUANTITY (QUINTALS)<input className="field-control" type="number" min="0.01" step="0.01" value={buyerDemandDraft.quantity} onChange={(event) => setBuyerDemandDraft((current) => ({ ...current, quantity: event.target.value }))} required /></label>
+            <label className="field-label">OFFERED PRICE / QUINTAL<input className="field-control" type="number" min="0" step="1" value={buyerDemandDraft.offeredPricePerQuintal} onChange={(event) => setBuyerDemandDraft((current) => ({ ...current, offeredPricePerQuintal: event.target.value }))} required /></label>
+            <label className="field-label">STATE<input className="field-control" value={buyerDemandDraft.state} onChange={(event) => setBuyerDemandDraft((current) => ({ ...current, state: event.target.value }))} required /></label>
+            <label className="field-label">DISTRICT<input className="field-control" value={buyerDemandDraft.district} onChange={(event) => setBuyerDemandDraft((current) => ({ ...current, district: event.target.value }))} required /></label>
+          </div>
+          {marketplaceError && <p className="auth-error" role="alert">{marketplaceError}</p>}
+          <div className="crop-panel-footer"><p>Only the buyer account role can publish this demand.</p><button className="button button-primary" type="submit" disabled={marketplaceLoading}>{marketplaceLoading ? "Publishing…" : "Publish demand"} <span>→</span></button></div>
+        </form>
+        <div className="offer-list">{myBuyerDemands.map((demand) => <article className="panel offer-card" key={demand._id}><div className="offer-card-head"><div className="buyer-avatar-large">{demand.cropName?.charAt(0).toUpperCase()}</div><div><h2>{demand.cropName}</h2><p>{demand.quantity} {demand.quantityUnit} · {demand.location?.district}, {demand.location?.state}</p></div><span className={`status-pill ${demand.status === "fulfilled" ? "success" : "pending"}`}>{demand.status}</span></div><div className="offer-price-row"><div><small>OFFERED PRICE</small><strong>{formatMoney(demand.offeredPricePerQuintal)} <small>/ quintal</small></strong></div><div><small>TOTAL OFFER</small><strong>{formatMoney(demand.offeredPricePerQuintal * demand.quantity)}</strong></div></div>{demand.status === "open" && <div className="offer-actions"><button className="button button-primary" onClick={() => updateBuyerDemandStatus(demand._id, "fulfill")}>Mark fulfilled <span>✓</span></button><button className="button button-danger-quiet" onClick={() => updateBuyerDemandStatus(demand._id, "cancel")}>Cancel demand</button></div>}</article>)}{myBuyerDemands.length === 0 && !marketplaceLoading && <div className="empty-state"><span>⇄</span><h3>No purchase demands yet</h3><p>Create one above to publish it to buyers and farmers.</p></div>}</div>
       </>
     );
   }
@@ -549,6 +1007,7 @@ function App() {
       <div className="app-body">{renderSidebar()}<main className="workspace">
         {page === "dashboard" && renderDashboard()}
         {page === "sell" && !isBuyer && renderSellPage()}
+        {page === "active-demand" && !isBuyer && renderActiveDemandsPage()}
         {page === "buy" && isBuyer && renderBuyerPage()}
         {page === "history" && renderHistory()}
         {page === "news" && renderNews()}
